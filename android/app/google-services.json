@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "542729551050",
+    "project_id": "appstudydeck-e036d",
+    "storage_bucket": "appstudydeck-e036d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:542729551050:android:45d4d81cafc47bafd80833",
+        "android_client_info": {
+          "package_name": "com.example.flashcard_studydeck"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "542729551050-oof453t5cij2u7tte41uj2uquau1ckdl.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCkNgYJwze5_t_AwXTLNuNALDBDEaWqo3Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "542729551050-oof453t5cij2u7tte41uj2uquau1ckdl.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

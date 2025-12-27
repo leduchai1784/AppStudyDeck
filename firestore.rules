@@ -1,0 +1,236 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    function isNotBlocked() {
+      // User is not blocked if authenticated AND:
+      // - User document doesn't exist (new user, not blocked) OR
+      // - User document exists and isBlocked is not true
+      return isAuthenticated() && (
+        !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isBlocked != true)
+      );
+    }
+    
+    // Test collection - Allow read/write for authenticated users (for testing)
+    match /test/{testId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      // Allow read: user can read own data, admin can read all
+      allow read: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      
+      // Allow create: user can create their own document when registering
+      allow create: if isAuthenticated() && 
+                     request.auth.uid == userId &&
+                     request.resource.data.keys().hasAll(['email', 'name', 'role', 'isBlocked', 'statistics']);
+      
+      // Allow update: user can update own data, admin can update all
+      allow update: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      
+      // Allow delete: only admin
+      allow delete: if isAdmin();
+    }
+    
+    // Decks collection
+    match /decks/{deckId} {
+      // 👑 Rule 1: Admin can read all decks (including reported and hidden)
+      // Admin queries all decks and filters client-side to avoid permission-denied
+      // This allows admin to query: .orderBy('updatedAt', descending: true)
+      allow read: if isAuthenticated() && isAdmin();
+      
+      // 🔓 Rule 2: Public decks - anyone authenticated can read (not hidden)
+      // Status: private, public, reported, hidden
+      // Public decks are visible immediately (post-moderation)
+      // This allows queries like: .where('isPublic', isEqualTo: true).where('status', isNotEqualTo: 'hidden')
+      allow read: if isAuthenticated() &&
+                   resource.data.isPublic == true &&
+                   resource.data.status != 'hidden';
+      
+      // 🔒 Rule 3: Owner can read their own decks (regardless of public/private/status)
+      // This allows queries like: .where('authorId', isEqualTo: userId)
+      allow read: if isAuthenticated() &&
+                   resource.data.authorId == request.auth.uid;
+      
+      // Allow create: user can create deck with status 'private' or 'public'
+      // Deck public ngay khi tạo (không cần duyệt)
+      allow create: if isAuthenticated() && isNotBlocked() && 
+                     request.resource.data.authorId == request.auth.uid &&
+                     (request.resource.data.status == 'private' || 
+                      request.resource.data.status == 'public' ||
+                      !request.resource.data.hasAll(['status'])); // Allow old format
+      
+      // Allow update: author/admin can update all fields
+      // OR any authenticated user can update only favoriteCount and viewCount
+      // OR user can report deck (change status to 'reported')
+      allow update: if isAuthenticated() && isNotBlocked() && (
+        resource.data.authorId == request.auth.uid ||
+        isAdmin() ||
+        // Allow updating only favoriteCount and viewCount for any authenticated user
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['favoriteCount', 'viewCount', 'updatedAt'])) ||
+        // Allow user to report deck (change status to 'reported')
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+         request.resource.data.status == 'reported' &&
+         resource.data.status != 'reported')
+      );
+      
+      allow delete: if isAuthenticated() && (
+        resource.data.authorId == request.auth.uid ||
+        isAdmin()
+      );
+    }
+    
+    // Flashcards collection
+    match /flashcards/{flashcardId} {
+      // Allow read: any authenticated user can read flashcards
+      // Note: Access control is handled at the deck level
+      // If user can access the deck, they can read its flashcards
+      allow read: if isAuthenticated() && isNotBlocked();
+      
+      allow create: if isAuthenticated() && isNotBlocked() && 
+                     exists(/databases/$(database)/documents/decks/$(request.resource.data.deckId)) &&
+                     get(/databases/$(database)/documents/decks/$(request.resource.data.deckId)).data.authorId == request.auth.uid;
+      
+      allow update: if isAuthenticated() && isNotBlocked() && (
+        exists(/databases/$(database)/documents/decks/$(resource.data.deckId)) &&
+        get(/databases/$(database)/documents/decks/$(resource.data.deckId)).data.authorId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      allow delete: if isAuthenticated() && (
+        exists(/databases/$(database)/documents/decks/$(resource.data.deckId)) &&
+        get(/databases/$(database)/documents/decks/$(resource.data.deckId)).data.authorId == request.auth.uid ||
+        isAdmin()
+      );
+    }
+    
+    // User deck progress
+    match /user_deck_progress/{progressId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      allow create, update: if isAuthenticated() && isNotBlocked() && 
+                             request.resource.data.userId == request.auth.uid;
+      
+      allow delete: if isAdmin();
+    }
+    
+    // User flashcard progress
+    match /user_flashcard_progress/{progressId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      allow create, update: if isAuthenticated() && isNotBlocked() && 
+                             request.resource.data.userId == request.auth.uid;
+      
+      allow delete: if isAdmin();
+    }
+    
+    // Deck favorites
+    // Document ID format: {userId}_{deckId}
+    match /deck_favorites/{favoriteId} {
+      // Allow read: 
+      // - User can read their own favorites (including checking if exists)
+      // - Admin can read all
+      // - Allow reading to check existence (resource may be null)
+      allow read: if isAuthenticated() && (
+        // If document exists, check ownership
+        (resource != null && resource.data.userId == request.auth.uid) ||
+        // If document doesn't exist, allow if checking own favorite (extract userId from favoriteId)
+        (resource == null && favoriteId.matches('^' + request.auth.uid + '_.+$')) ||
+        isAdmin()
+      );
+      
+      // Allow create: user can create favorite for themselves
+      // Must check: userId in data matches current user
+      allow create: if isAuthenticated() && 
+                     request.resource.data.userId == request.auth.uid &&
+                     request.resource.data.deckId is string;
+      
+      // Allow delete: user can delete their own favorites
+      // Check: userId in document data must match current user
+      // Note: When deleting, resource exists and contains the document data
+      allow delete: if isAuthenticated() && 
+                     resource != null &&
+                     resource.data.userId == request.auth.uid;
+    }
+    
+    // Reports
+    match /reports/{reportId} {
+      allow read: if isAuthenticated() && (
+        resource.data.reporterId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      allow create: if isAuthenticated() && isNotBlocked() && 
+                     request.resource.data.reporterId == request.auth.uid;
+      
+      allow update: if isAdmin();
+    }
+    
+    // Study sessions
+    match /study_sessions/{sessionId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      allow create: if isAuthenticated() && isNotBlocked() && 
+                     request.resource.data.userId == request.auth.uid;
+    }
+    
+    // Notifications
+    match /notifications/{notificationId} {
+      // Allow read: user can read their own notifications, admin can read all
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      // Allow create: 
+      // - Admin can create notifications for any user
+      // - Any authenticated user can create (for system notifications when deck is approved/rejected)
+      // Note: In production, consider using Cloud Functions to create notifications
+      allow create: if isAuthenticated() && isNotBlocked() && (
+        isAdmin() ||
+        // Allow any authenticated user to create notifications
+        // This allows system to create notifications when events happen
+        request.resource.data.keys().hasAll(['userId', 'type', 'title', 'message', 'isRead', 'createdAt'])
+      );
+      
+      // Allow update: user can update their own notifications (mark as read), admin can update all
+      allow update: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      // Allow delete: user can delete their own notifications, admin can delete all
+      allow delete: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isAdmin()
+      );
+    }
+  }
+}
